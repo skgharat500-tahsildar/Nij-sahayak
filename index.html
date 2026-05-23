@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0f172a">
+<meta name="description" content="Nij Sahayak - Personal Assistant with Cloud Sync">
+<link rel="manifest" href="manifest.json">
+<title>निज सहायक — Personal Assistant</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@300;400;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+<!-- Firebase SDKs -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc, onSnapshot, query, orderBy }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBeTQTviTL41g55WcOUJbX4n0Eqc1i9Il4",
+  authDomain: "nij-sahayak.firebaseapp.com",
+  projectId: "nij-sahayak",
+  storageBucket: "nij-sahayak.firebasestorage.app",
+  messagingSenderId: "909873227517",
+  appId: "1:909873227517:web:b98ef0b91d58c643190094"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
+
+let currentUser = null;
+let unsubMeetings = null;
+let unsubTasks = null;
+
+// ==================== AUTH ====================
+window.googleLogin = async function() {
+  try {
+    document.getElementById('loginBtn').textContent = 'जुड़ रहा है...';
+    await signInWithPopup(auth, provider);
+  } catch(e) {
+    document.getElementById('loginBtn').textContent = '🔐 Google से Login करें';
+    showNotif('❌ Login failed: ' + e.message, 'danger');
+  }
+};
+
+window.doSignOut = async function() {
+  if (!confirm('Logout करना चाहते हैं?')) return;
+  if (unsubMeetings) unsubMeetings();
+  if (unsubTasks) unsubTasks();
+  await signOut(auth);
+  DB.meetings = []; DB.tasks = [];
+  showLoginScreen();
+};
+
+onAuthStateChanged(auth, user => {
+  currentUser = user;
+  if (user) {
+    showAppScreen(user);
+    loadSettingsFromLocal();
+    startFirestoreListeners(user.uid);
+  } else {
+    showLoginScreen();
+  }
+});
+
+function showLoginScreen() {
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('appScreen').style.display = 'none';
+}
+
+function showAppScreen(user) {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appScreen').style.display = 'block';
+  document.getElementById('userAvatar').src = user.photoURL || '';
+  document.getElementById('userName2').textContent = user.displayName || 'User';
+  document.getElementById('userEmail').textContent = user.email || '';
+  updateApiStatus();
+  refreshDashboard();
+}
+
+// ==================== FIRESTORE LISTENERS ====================
+function startFirestoreListeners(uid) {
+  // Real-time meetings listener
+  if (unsubMeetings) unsubMeetings();
+  const mRef = collection(db, 'users', uid, 'meetings');
+  unsubMeetings = onSnapshot(mRef, snap => {
+    DB.meetings = snap.docs.map(d => ({id: d.id, ...d.data()}));
+    DB.meetings.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+    refreshDashboard();
+    if (document.getElementById('page-meetings').classList.contains('active'))
+      renderMeetings(meetFilter);
+    showSyncBadge();
+  });
+
+  // Real-time tasks listener
+  if (unsubTasks) unsubTasks();
+  const tRef = collection(db, 'users', uid, 'tasks');
+  unsubTasks = onSnapshot(tRef, snap => {
+    DB.tasks = snap.docs.map(d => ({id: d.id, ...d.data()}));
+    DB.tasks.sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+    refreshDashboard();
+    if (document.getElementById('page-tasks').classList.contains('active'))
+      renderTasks(taskFilter);
+    showSyncBadge();
+  });
+}
+
+// ==================== FIRESTORE CRUD ====================
+window.saveMeetingToCloud = async function(meeting) {
+  if (!currentUser) return;
+  const ref = doc(db, 'users', currentUser.uid, 'meetings', meeting.id.toString());
+  await setDoc(ref, meeting);
+};
+
+window.deleteMeetingFromCloud = async function(id) {
+  if (!currentUser) return;
+  await deleteDoc(doc(db, 'users', currentUser.uid, 'meetings', id.toString()));
+};
+
+window.saveTaskToCloud = async function(task) {
+  if (!currentUser) return;
+  const ref = doc(db, 'users', currentUser.uid, 'tasks', task.id.toString());
+  await setDoc(ref, task);
+};
+
+window.deleteTaskFromCloud = async function(id) {
+  if (!currentUser) return;
+  await deleteDoc(doc(db, 'users', currentUser.uid, 'tasks', id.toString()));
+};
+
+// Export for non-module use
+window._db = db;
+window._auth = auth;
+window._currentUser = () => currentUser;
+
+console.log('Firebase initialized ✅');
+</script>
+
+<style>
+  :root {
+    --bg: #080f1e;
+    --surface: #0f1c2e;
+    --surface2: #162236;
+    --border: #1e3a5f;
+    --accent: #00d4aa;
+    --accent2: #ff6b35;
+    --accent3: #a78bfa;
+    --text: #e2f0ff;
+    --text2: #7a9cc0;
+    --danger: #ff4757;
+    --success: #00d4aa;
+    --warn: #ffa502;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Noto Sans Devanagari',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; overflow-x:hidden; }
+  body::before { content:''; position:fixed; inset:0; background: radial-gradient(ellipse 60% 40% at 20% 10%,rgba(0,212,170,.07) 0%,transparent 60%), radial-gradient(ellipse 50% 50% at 80% 80%,rgba(167,139,250,.06) 0%,transparent 60%); pointer-events:none; z-index:0; }
+
+  /* LOGIN SCREEN */
+  #loginScreen {
+    position:fixed; inset:0; z-index:1000;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    background: radial-gradient(ellipse 80% 80% at 50% 50%, rgba(0,212,170,0.08) 0%, transparent 70%), var(--bg);
+    padding:24px;
+  }
+  .login-card {
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:24px;
+    padding:40px 32px;
+    text-align:center;
+    max-width:360px; width:100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .login-logo { font-size:56px; margin-bottom:16px; }
+  .login-title { font-size:24px; font-weight:700; color:var(--accent); margin-bottom:8px; }
+  .login-sub { font-size:14px; color:var(--text2); margin-bottom:32px; line-height:1.6; }
+  .login-features { text-align:left; margin-bottom:28px; }
+  .login-feature { display:flex; align-items:center; gap:10px; padding:8px 0; font-size:13px; color:var(--text2); border-bottom:1px solid rgba(255,255,255,0.05); }
+  .login-feature:last-child { border:none; }
+  #loginBtn {
+    width:100%; padding:14px;
+    background:linear-gradient(135deg,var(--accent),#00b894);
+    border:none; border-radius:14px;
+    color:#000; font-size:15px; font-weight:700;
+    cursor:pointer; font-family:'Noto Sans Devanagari',sans-serif;
+    display:flex; align-items:center; justify-content:center; gap:10px;
+    transition:all 0.2s;
+  }
+  #loginBtn:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,212,170,0.3); }
+  .login-note { margin-top:16px; font-size:11px; color:var(--text2); }
+
+  /* APP SCREEN */
+  #appScreen { display:none; }
+
+  /* HEADER */
+  header { position:sticky; top:0; z-index:100; background:rgba(8,15,30,.95); backdrop-filter:blur(20px); border-bottom:1px solid var(--border); padding:10px 16px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .logo { display:flex; align-items:center; gap:8px; }
+  .logo-icon { width:32px; height:32px; background:linear-gradient(135deg,var(--accent),var(--accent3)); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:16px; }
+  .logo-text { font-family:'Space Mono',monospace; font-size:13px; font-weight:700; color:var(--accent); }
+  .header-right { display:flex; align-items:center; gap:8px; }
+  #syncBadge { font-size:10px; color:var(--accent); font-family:'Space Mono',monospace; background:rgba(0,212,170,0.1); padding:3px 8px; border-radius:20px; border:1px solid rgba(0,212,170,0.2); display:none; }
+  #syncBadge.show { display:block; }
+  .user-avatar { width:30px; height:30px; border-radius:50%; border:2px solid var(--accent); cursor:pointer; object-fit:cover; }
+  .avatar-placeholder { width:30px; height:30px; border-radius:50%; border:2px solid var(--accent); background:var(--surface2); display:flex; align-items:center; justify-content:center; font-size:14px; cursor:pointer; }
+  #apiStatus { display:flex; align-items:center; gap:5px; font-family:'Space Mono',monospace; font-size:10px; color:var(--text2); }
+  .status-dot { width:7px; height:7px; border-radius:50%; background:var(--warn); animation:pulse 2s infinite; }
+  .status-dot.connected { background:var(--accent); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* TABS */
+  .tabs { position:sticky; top:53px; z-index:99; background:rgba(8,15,30,.95); backdrop-filter:blur(20px); display:flex; border-bottom:1px solid var(--border); overflow-x:auto; scrollbar-width:none; }
+  .tabs::-webkit-scrollbar { display:none; }
+  .tab-btn { flex:1; min-width:70px; padding:12px 6px; border:none; background:transparent; color:var(--text2); font-family:'Noto Sans Devanagari',sans-serif; font-size:11px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:3px; border-bottom:2px solid transparent; transition:all .2s; }
+  .tab-btn .tab-icon { font-size:18px; }
+  .tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); background:rgba(0,212,170,.05); }
+
+  /* PAGES */
+  .page { display:none; padding:14px; max-width:700px; margin:0 auto; position:relative; z-index:1; }
+  .page.active { display:block; }
+
+  /* CARDS */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .card-title { font-size:14px; font-weight:700; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
+
+  /* GREETING */
+  .greeting { margin-bottom:16px; padding:18px; background:linear-gradient(135deg,rgba(0,212,170,.1),rgba(167,139,250,.1)); border:1px solid rgba(0,212,170,.2); border-radius:14px; }
+  .greeting h2 { font-size:18px; margin-bottom:2px; }
+  .greeting p { color:var(--text2); font-size:12px; }
+  #currentDateTime { font-family:'Space Mono',monospace; font-size:11px; color:var(--accent); margin-top:6px; }
+
+  /* STATS */
+  .dashboard-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
+  .stat-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px; text-align:center; }
+  .stat-card .stat-num { font-size:26px; font-weight:700; font-family:'Space Mono',monospace; }
+  .stat-card .stat-label { font-size:11px; color:var(--text2); margin-top:3px; }
+  .stat-card.green .stat-num { color:var(--accent); }
+  .stat-card.orange .stat-num { color:var(--accent2); }
+  .stat-card.purple .stat-num { color:var(--accent3); }
+  .stat-card.red .stat-num { color:var(--danger); }
+
+  .section-title { font-size:12px; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:1px; margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+  .section-title::after { content:''; flex:1; height:1px; background:var(--border); }
+
+  /* TODAY LIST */
+  .today-list { display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+  .today-item { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; align-items:center; gap:10px; position:relative; overflow:hidden; transition:all .2s; }
+  .today-item::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; }
+  .today-item.meeting::before { background:var(--accent3); }
+  .today-item.task::before { background:var(--accent2); }
+  .today-item.done { opacity:.5; }
+  .today-item:hover { border-color:var(--accent); transform:translateX(3px); }
+  .item-time { font-family:'Space Mono',monospace; font-size:10px; color:var(--text2); min-width:40px; }
+  .item-icon { font-size:16px; }
+  .item-content { flex:1; }
+  .item-title { font-size:13px; font-weight:600; }
+  .item-desc { font-size:11px; color:var(--text2); margin-top:2px; }
+  .item-badge { font-size:10px; padding:2px 7px; border-radius:20px; font-family:'Space Mono',monospace; }
+  .badge-meeting { background:rgba(167,139,250,.2); color:var(--accent3); }
+  .badge-task { background:rgba(255,107,53,.2); color:var(--accent2); }
+  .badge-done { background:rgba(0,212,170,.15); color:var(--accent); }
+
+  .empty-state { text-align:center; padding:32px 20px; color:var(--text2); font-size:13px; }
+  .empty-state .empty-icon { font-size:36px; margin-bottom:10px; }
+
+  /* FORMS */
+  .form-group { margin-bottom:12px; }
+  .form-label { font-size:11px; color:var(--text2); margin-bottom:5px; display:block; }
+  .form-input, .form-select, .form-textarea { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:9px; padding:9px 12px; color:var(--text); font-family:'Noto Sans Devanagari',sans-serif; font-size:13px; transition:border-color .2s; outline:none; }
+  .form-input:focus, .form-select:focus, .form-textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(0,212,170,.1); }
+  .form-select option { background:var(--surface2); }
+  .form-textarea { resize:vertical; min-height:70px; }
+  .form-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+  /* BUTTONS */
+  .btn { padding:10px 18px; border-radius:9px; border:none; font-family:'Noto Sans Devanagari',sans-serif; font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; display:inline-flex; align-items:center; gap:5px; }
+  .btn-primary { background:linear-gradient(135deg,var(--accent),#00b894); color:#000; width:100%; justify-content:center; }
+  .btn-primary:hover { transform:translateY(-1px); box-shadow:0 4px 16px rgba(0,212,170,.3); }
+  .btn-danger { background:rgba(255,71,87,.2); color:var(--danger); border:1px solid rgba(255,71,87,.3); }
+  .btn-done { background:rgba(0,212,170,.15); color:var(--accent); border:1px solid rgba(0,212,170,.3); }
+  .btn-sm { padding:5px 10px; font-size:11px; }
+
+  /* ITEM CARDS */
+  .items-list { display:flex; flex-direction:column; gap:8px; }
+  .item-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px; transition:all .2s; position:relative; }
+  .item-card:hover { border-color:rgba(0,212,170,.3); }
+  .item-card.done-card { opacity:.55; }
+  .item-header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:6px; }
+  .item-name { font-size:14px; font-weight:600; }
+  .item-actions { display:flex; gap:5px; flex-shrink:0; }
+  .item-meta { display:flex; gap:8px; flex-wrap:wrap; font-size:11px; color:var(--text2); }
+  .priority-high { color:var(--danger); }
+  .priority-medium { color:var(--warn); }
+  .priority-low { color:var(--accent); }
+
+  /* FILTER BAR */
+  .filter-bar { display:flex; gap:7px; margin-bottom:14px; overflow-x:auto; scrollbar-width:none; }
+  .filter-bar::-webkit-scrollbar { display:none; }
+  .filter-chip { padding:5px 12px; border-radius:20px; border:1px solid var(--border); background:transparent; color:var(--text2); font-size:11px; cursor:pointer; white-space:nowrap; transition:all .2s; font-family:'Noto Sans Devanagari',sans-serif; }
+  .filter-chip.active { background:rgba(0,212,170,.15); border-color:var(--accent); color:var(--accent); }
+
+  /* CHAT */
+  #apiSetup { background:var(--surface); border:1px solid rgba(255,107,53,.3); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .api-steps { font-size:12px; color:var(--text2); line-height:2; margin:10px 0; }
+  .api-steps a { color:var(--accent); }
+  .api-input-row { display:flex; gap:7px; }
+  .api-input-row .form-input { flex:1; }
+
+  #chatMessages { display:flex; flex-direction:column; gap:10px; margin-bottom:14px; min-height:180px; }
+  .msg { display:flex; gap:8px; align-items:flex-start; animation:msgIn .3s ease; }
+  @keyframes msgIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .msg.user { flex-direction:row-reverse; }
+  .msg-avatar { width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:15px; flex-shrink:0; }
+  .msg.ai .msg-avatar { background:linear-gradient(135deg,var(--accent),var(--accent3)); }
+  .msg.user .msg-avatar { background:linear-gradient(135deg,var(--accent2),var(--accent3)); }
+  .msg-bubble { max-width:82%; padding:10px 14px; border-radius:14px; font-size:13px; line-height:1.6; }
+  .msg.ai .msg-bubble { background:var(--surface); border:1px solid var(--border); border-top-left-radius:4px; }
+  .msg.user .msg-bubble { background:rgba(0,212,170,.15); border:1px solid rgba(0,212,170,.3); border-top-right-radius:4px; }
+  .msg-time { font-size:10px; color:var(--text2); margin-top:3px; font-family:'Space Mono',monospace; }
+  .typing-indicator { display:flex; gap:4px; align-items:center; padding:6px 2px; }
+  .typing-dot { width:6px; height:6px; border-radius:50%; background:var(--text2); animation:typing 1.2s infinite; }
+  .typing-dot:nth-child(2){animation-delay:.2s} .typing-dot:nth-child(3){animation-delay:.4s}
+  @keyframes typing { 0%,80%,100%{opacity:.3;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
+
+  .chat-input-area { position:sticky; bottom:0; background:rgba(8,15,30,.95); backdrop-filter:blur(20px); padding:10px 0; border-top:1px solid var(--border); }
+  .doc-preview { background:var(--surface2); border:1px solid var(--border); border-radius:9px; padding:8px 12px; margin-bottom:8px; font-size:12px; color:var(--text2); display:flex; align-items:center; justify-content:space-between; }
+  .chat-row { display:flex; gap:7px; }
+  .chat-row .form-input { flex:1; }
+  .send-btn { width:42px; height:42px; border-radius:11px; background:linear-gradient(135deg,var(--accent),#00b894); border:none; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:17px; color:#000; flex-shrink:0; transition:all .2s; }
+  .send-btn:hover { transform:scale(1.05); }
+  .send-btn:disabled { opacity:.4; cursor:not-allowed; }
+  .attach-btn { width:42px; height:42px; border-radius:11px; background:var(--surface2); border:1px solid var(--border); cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; transition:all .2s; }
+  .attach-btn:hover { border-color:var(--accent); }
+
+  /* SETTINGS */
+  .setting-row { display:flex; align-items:center; justify-content:space-between; padding:12px; background:var(--surface); border:1px solid var(--border); border-radius:11px; margin-bottom:7px; }
+  .setting-info h4 { font-size:13px; }
+  .setting-info p { font-size:11px; color:var(--text2); }
+  .toggle { width:42px; height:22px; background:var(--border); border-radius:11px; position:relative; cursor:pointer; transition:background .3s; border:none; flex-shrink:0; }
+  .toggle::after { content:''; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:white; transition:transform .3s; }
+  .toggle.on { background:var(--accent); }
+  .toggle.on::after { transform:translateX(20px); }
+
+  /* USER CARD */
+  .user-card { background:linear-gradient(135deg,rgba(0,212,170,.1),rgba(167,139,250,.1)); border:1px solid rgba(0,212,170,.2); border-radius:14px; padding:16px; margin-bottom:14px; display:flex; align-items:center; gap:14px; }
+  .user-card img { width:52px; height:52px; border-radius:50%; border:2px solid var(--accent); object-fit:cover; }
+  .user-card-info h3 { font-size:16px; }
+  .user-card-info p { font-size:12px; color:var(--text2); }
+  .cloud-badge { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--accent); background:rgba(0,212,170,.1); padding:3px 10px; border-radius:20px; margin-top:6px; }
+
+  /* NOTIFICATIONS */
+  #notifBar { position:fixed; top:70px; right:12px; z-index:999; display:flex; flex-direction:column; gap:7px; }
+  .notif { background:var(--surface); border:1px solid var(--accent); border-radius:11px; padding:10px 14px; font-size:12px; max-width:260px; animation:slideIn .3s ease; display:flex; gap:8px; align-items:flex-start; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+  @keyframes slideIn { from{opacity:0;transform:translateX(100%)} to{opacity:1;transform:translateX(0)} }
+  .notif-close { cursor:pointer; color:var(--text2); margin-left:auto; }
+
+  ::-webkit-scrollbar { width:4px; height:4px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+
+  @media(max-width:400px){ .form-row{grid-template-columns:1fr} .dashboard-grid{gap:8px} }
+</style>
+</head>
+<body>
+
+<div id="notifBar"></div>
+
+<!-- LOGIN SCREEN -->
+<div id="loginScreen" style="display:flex">
+  <div class="login-card">
+    <div class="login-logo">🤖</div>
+    <div class="login-title">निज सहायक</div>
+    <div class="login-sub">आपका Personal AI Assistant<br>Meetings • Tasks • AI Chat • Cloud Sync</div>
+    <div class="login-features">
+      <div class="login-feature"><span>☁️</span> सभी devices pe sync — mobile, PC, tablet</div>
+      <div class="login-feature"><span>🤖</span> AI से बात करके schedule बनाएं</div>
+      <div class="login-feature"><span>🔔</span> Reminders & daily briefing</div>
+      <div class="login-feature"><span>🔒</span> Secure — सिर्फ आपका data</div>
+    </div>
+    <button id="loginBtn" onclick="googleLogin()">
+      <img src="https://www.google.com/favicon.ico" width="18" style="border-radius:3px"> Google से Login करें
+    </button>
+    <div class="login-note">Free • No ads • Data sirf aapka</div>
+  </div>
+</div>
+
+<!-- APP SCREEN -->
+<div id="appScreen">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🤖</div>
+      <div>
+        <div class="logo-text">निज सहायक</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div id="syncBadge">☁️ Synced</div>
+      <div id="apiStatus"><div class="status-dot" id="statusDot"></div><span id="statusText">AI</span></div>
+      <img id="userAvatar" class="user-avatar" src="" onclick="showPage('settings')" onerror="this.style.display='none';document.getElementById('avatarPlaceholder').style.display='flex'">
+      <div id="avatarPlaceholder" class="avatar-placeholder" style="display:none" onclick="showPage('settings')">👤</div>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showPage('dashboard')"><span class="tab-icon">🏠</span>Dashboard</button>
+    <button class="tab-btn" onclick="showPage('meetings')"><span class="tab-icon">📅</span>Meetings</button>
+    <button class="tab-btn" onclick="showPage('tasks')"><span class="tab-icon">✅</span>Tasks</button>
+    <button class="tab-btn" onclick="showPage('chat')"><span class="tab-icon">💬</span>AI Chat</button>
+    <button class="tab-btn" onclick="showPage('settings')"><span class="tab-icon">⚙️</span>Settings</button>
+  </div>
+
+  <!-- DASHBOARD -->
+  <div class="page active" id="page-dashboard">
+    <div class="greeting">
+      <h2 id="greetingText">नमस्ते! 🙏</h2>
+      <p>आज का संक्षिप्त विवरण</p>
+      <div id="currentDateTime">—</div>
+    </div>
+    <div class="dashboard-grid">
+      <div class="stat-card green"><div class="stat-num" id="statMeetings">0</div><div class="stat-label">📅 आज की Meetings</div></div>
+      <div class="stat-card orange"><div class="stat-num" id="statTasksPending">0</div><div class="stat-label">⏳ Pending Tasks</div></div>
+      <div class="stat-card purple"><div class="stat-num" id="statTasksDone">0</div><div class="stat-label">✅ Done Tasks</div></div>
+      <div class="stat-card red"><div class="stat-num" id="statOverdue">0</div><div class="stat-label">🔴 Overdue</div></div>
+    </div>
+    <div class="section-title">📋 आज का Schedule</div>
+    <div class="today-list" id="todayList"><div class="empty-state"><div class="empty-icon">📭</div><p>Loading...</p></div></div>
+    <div class="section-title">🗓️ आने वाले 3 दिन</div>
+    <div class="today-list" id="upcomingList"><div class="empty-state"><div class="empty-icon">🗓️</div><p>Loading...</p></div></div>
+  </div>
+
+  <!-- MEETINGS -->
+  <div class="page" id="page-meetings">
+    <div class="card">
+      <div class="card-title">📅 नई Meeting जोड़ें</div>
+      <div class="form-group"><label class="form-label">Meeting का नाम *</label><input class="form-input" id="meetTitle" placeholder="जैसे: Patwari Review Meeting"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">तारीख *</label><input class="form-input" id="meetDate" type="date"></div>
+        <div class="form-group"><label class="form-label">समय</label><input class="form-input" id="meetTime" type="time"></div>
+      </div>
+      <div class="form-group"><label class="form-label">स्थान</label><input class="form-input" id="meetLocation" placeholder="जैसे: Karyalay Tahsildar Kutru"></div>
+      <div class="form-group"><label class="form-label">Agenda / Notes</label><textarea class="form-textarea" id="meetDesc" placeholder="Meeting का agenda..."></textarea></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Reminder</label>
+          <select class="form-select" id="meetReminder">
+            <option value="0">नहीं</option><option value="15">15 मिनट</option><option value="30" selected>30 मिनट</option><option value="60">1 घंटा</option><option value="1440">1 दिन</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Repeat</label>
+          <select class="form-select" id="meetRepeat">
+            <option value="none">एक बार</option><option value="daily">रोज़</option><option value="weekly">हर हफ्ते</option><option value="monthly">हर महीने</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="addMeeting()">☁️ Save & Sync करें</button>
+    </div>
+    <div class="filter-bar">
+      <button class="filter-chip active" onclick="filterMeetings('all',this)">सभी</button>
+      <button class="filter-chip" onclick="filterMeetings('today',this)">आज</button>
+      <button class="filter-chip" onclick="filterMeetings('upcoming',this)">Upcoming</button>
+      <button class="filter-chip" onclick="filterMeetings('past',this)">Past</button>
+    </div>
+    <div class="items-list" id="meetingsList"></div>
+  </div>
+
+  <!-- TASKS -->
+  <div class="page" id="page-tasks">
+    <div class="card">
+      <div class="card-title">✅ नया Task जोड़ें</div>
+      <div class="form-group"><label class="form-label">Task का नाम *</label><input class="form-input" id="taskTitle" placeholder="जैसे: Census form जमा करना"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Due Date</label><input class="form-input" id="taskDate" type="date"></div>
+        <div class="form-group"><label class="form-label">Priority</label>
+          <select class="form-select" id="taskPriority">
+            <option value="high">🔴 High</option><option value="medium" selected>🟡 Medium</option><option value="low">🟢 Low</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Category</label>
+        <select class="form-select" id="taskCategory">
+          <option value="office">🏛️ Office / Revenue</option><option value="census">📊 Census 2027</option><option value="electoral">🗳️ Electoral</option><option value="personal">👤 Personal</option><option value="other">📌 Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="taskNotes" placeholder="Additional notes..."></textarea></div>
+      <button class="btn btn-primary" onclick="addTask()">☁️ Save & Sync करें</button>
+    </div>
+    <div class="filter-bar">
+      <button class="filter-chip active" onclick="filterTasks('all',this)">सभी</button>
+      <button class="filter-chip" onclick="filterTasks('pending',this)">Pending</button>
+      <button class="filter-chip" onclick="filterTasks('done',this)">Done</button>
+      <button class="filter-chip" onclick="filterTasks('high',this)">🔴 High</button>
+      <button class="filter-chip" onclick="filterTasks('census',this)">📊 Census</button>
+      <button class="filter-chip" onclick="filterTasks('office',this)">🏛️ Office</button>
+    </div>
+    <div class="items-list" id="tasksList"></div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="page" id="page-chat">
+    <div id="apiSetup">
+      <div class="card-title">🔑 Gemini API Key Setup (एक बार)</div>
+      <div class="api-steps">1. <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> pe jaao<br>2. "Create API Key" click karo (FREE)<br>3. Neeche paste karo</div>
+      <div class="api-input-row">
+        <input class="form-input" id="apiKeyInput" type="password" placeholder="AIza... paste karein">
+        <button class="btn btn-primary" style="width:auto" onclick="saveApiKey()">Save</button>
+      </div>
+    </div>
+    <div id="chatMessages">
+      <div class="msg ai">
+        <div class="msg-avatar">🤖</div>
+        <div>
+          <div class="msg-bubble">
+            नमस्ते! मैं आपका Smart AI सहायक हूँ। 🙏<br><br>
+            <b style="color:var(--accent)">बस बोलिए, automatically add होगा:</b><br><br>
+            📅 <i>"Kal subah 10 baje Patwari meeting hai"</i><br>
+            ✅ <i>"Census form jama karna hai parso tak"</i><br>
+            📋 <i>"Aaj ka schedule bataao"</i><br><br>
+            Gemini API key save karo aur shuru karo!
+          </div>
+          <div class="msg-time">अभी</div>
+        </div>
+      </div>
+    </div>
+    <div class="chat-input-area">
+      <div id="docPreviewBar" style="display:none">
+        <div class="doc-preview"><div>📄 <span id="docName">doc</span></div><button class="btn btn-danger btn-sm" onclick="clearDoc()">✕</button></div>
+      </div>
+      <div class="chat-row">
+        <button class="attach-btn" onclick="document.getElementById('fileInput').click()">📎</button>
+        <input type="file" id="fileInput" accept=".pdf,.txt,.doc,.docx" style="display:none" onchange="handleFileUpload(event)">
+        <input class="form-input" id="chatInput" placeholder="Kal 11 baje meeting hai... ya schedule bataao" onkeypress="if(event.key==='Enter')sendChat()">
+        <button class="send-btn" id="sendBtn" onclick="sendChat()">➤</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="page" id="page-settings">
+    <div class="user-card">
+      <img id="settingsAvatar" src="" onerror="this.style.display='none'">
+      <div class="user-card-info">
+        <h3 id="userName2">—</h3>
+        <p id="userEmail">—</p>
+        <div class="cloud-badge">☁️ Cloud Synced • Firestore</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="form-group"><label class="form-label">पद / Designation</label><input class="form-input" id="userDesig" placeholder="जैसे: Tahsildar, Kutru, Jila Bijapur"></div>
+      <div class="form-group"><label class="form-label">Gemini API Key</label>
+        <div class="api-input-row"><input class="form-input" id="apiKeySettings" type="password" placeholder="API Key"><button class="btn btn-primary" style="width:auto" onclick="saveApiKeyFromSettings()">Update</button></div>
+      </div>
+      <button class="btn btn-primary" onclick="saveProfile()">💾 Profile Save करें</button>
+    </div>
+
+    <div class="section-title">🔔 Notifications</div>
+    <div class="setting-row"><div class="setting-info"><h4>Browser Notifications</h4><p>Meeting/Task reminders</p></div><button class="toggle" id="notifToggle" onclick="toggleNotifications()"></button></div>
+    <div class="setting-row"><div class="setting-info"><h4>Daily Morning Briefing</h4><p>सुबह 8 बजे आज का schedule</p></div><button class="toggle" id="briefingToggle" onclick="toggleBriefing()"></button></div>
+
+    <div class="section-title" style="margin-top:14px">⚙️ Account</div>
+    <div class="setting-row"><div class="setting-info"><h4>Data Export</h4><p>JSON backup download</p></div><button class="btn btn-done btn-sm" onclick="exportData()">📥 Export</button></div>
+    <div class="setting-row"><div class="setting-info"><h4>Logout</h4><p>Google account से sign out</p></div><button class="btn btn-danger btn-sm" onclick="doSignOut()">🚪 Logout</button></div>
+
+    <div style="text-align:center;padding:20px;color:var(--text2);font-size:11px;font-family:'Space Mono',monospace">
+      निज सहायक v2.0 | Firebase Cloud Sync<br>Karyalay Tahsildar Kutru, Bijapur
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== LOCAL STATE ====================
+let DB = { meetings:[], tasks:[], settings:{ apiKey:'', userDesig:'', notifications:false, briefing:false } };
+
+function loadSettingsFromLocal() {
+  const s = localStorage.getItem('nijSahayakSettings');
+  if (s) { try { DB.settings = JSON.parse(s); } catch(e){} }
+  updateApiStatus();
+  loadSettingsUI();
+}
+function saveSettingsLocal() { localStorage.setItem('nijSahayakSettings', JSON.stringify(DB.settings)); }
+
+// ==================== NAV ====================
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  const idx=['dashboard','meetings','tasks','chat','settings'].indexOf(name);
+  document.querySelectorAll('.tab-btn')[idx]?.classList.add('active');
+  if(name==='dashboard') refreshDashboard();
+  if(name==='meetings') renderMeetings(meetFilter);
+  if(name==='tasks') renderTasks(taskFilter);
+  if(name==='settings') loadSettingsUI();
+}
+
+// ==================== DATETIME ====================
+function formatDate(d) {
+  if(!d) return '—';
+  const dt=new Date(d+'T00:00:00');
+  return dt.toLocaleDateString('hi-IN',{day:'numeric',month:'long',year:'numeric'});
+}
+function formatTime(t) {
+  if(!t) return '';
+  const [h,m]=t.split(':'); const hour=parseInt(h);
+  return `${hour%12||12}:${m} ${hour>=12?'PM':'AM'}`;
+}
+function isToday(ds) {
+  if(!ds) return false;
+  return new Date().toISOString().split('T')[0]===ds;
+}
+function isUpcoming(ds,days=3) {
+  if(!ds) return false;
+  const today=new Date(); today.setHours(0,0,0,0);
+  const d=new Date(ds+'T00:00:00');
+  const diff=(d-today)/(86400000);
+  return diff>0&&diff<=days;
+}
+function isPast(ds) {
+  if(!ds) return false;
+  const today=new Date(); today.setHours(0,0,0,0);
+  return new Date(ds+'T00:00:00')<today;
+}
+function getCatIcon(c) { return {office:'🏛️',census:'📊',electoral:'🗳️',personal:'👤',other:'📌'}[c]||'📌'; }
+
+function updateClock() {
+  const now=new Date();
+  const days=['रविवार','सोमवार','मंगलवार','बुधवार','गुरुवार','शुक्रवार','शनिवार'];
+  const months=['जनवरी','फरवरी','मार्च','अप्रैल','मई','जून','जुलाई','अगस्त','सितंबर','अक्तूबर','नवंबर','दिसंबर'];
+  const h=now.getHours(),m=now.getMinutes().toString().padStart(2,'0');
+  const el=document.getElementById('currentDateTime');
+  if(el) el.textContent=`${days[now.getDay()]}, ${now.getDate()} ${months[now.getMonth()]} ${now.getFullYear()} | ${h%12||12}:${m} ${h>=12?'PM':'AM'}`;
+  const u=window._currentUser?.();
+  const name=u?.displayName?.split(' ')[0]||'Sahib';
+  const greet=h<12?'सुप्रभात':h<17?'नमस्ते':'शुभ संध्या';
+  const gel=document.getElementById('greetingText');
+  if(gel) gel.textContent=`${greet}, ${name}! 🙏`;
+}
+
+// ==================== SYNC BADGE ====================
+function showSyncBadge() {
+  const b=document.getElementById('syncBadge');
+  b.classList.add('show');
+  setTimeout(()=>b.classList.remove('show'),3000);
+}
+
+// ==================== DASHBOARD ====================
+function refreshDashboard() {
+  updateClock();
+  const todayM=DB.meetings.filter(m=>isToday(m.date));
+  const pendingT=DB.tasks.filter(t=>!t.done);
+  const doneT=DB.tasks.filter(t=>t.done);
+  const overdue=DB.tasks.filter(t=>!t.done&&t.date&&isPast(t.date));
+  const s=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+  s('statMeetings',todayM.length); s('statTasksPending',pendingT.length);
+  s('statTasksDone',doneT.length); s('statOverdue',overdue.length);
+
+  const todayItems=[
+    ...todayM.map(m=>({...m,type:'meeting'})),
+    ...DB.tasks.filter(t=>isToday(t.date)&&!t.done).map(t=>({...t,type:'task'}))
+  ].sort((a,b)=>(a.time||'99:99').localeCompare(b.time||'99:99'));
+
+  const tl=document.getElementById('todayList');
+  if(tl) tl.innerHTML=todayItems.length===0
+    ?`<div class="empty-state"><div class="empty-icon">📭</div><p>आज कोई item नहीं</p></div>`
+    :todayItems.map(item=>`
+      <div class="today-item ${item.type} ${item.done?'done':''}">
+        <div class="item-time">${item.time?formatTime(item.time):'—'}</div>
+        <div class="item-icon">${item.type==='meeting'?'📅':getCatIcon(item.category)}</div>
+        <div class="item-content"><div class="item-title">${item.title}</div><div class="item-desc">${item.location||item.notes||''}</div></div>
+        <span class="item-badge ${item.type==='meeting'?'badge-meeting':'badge-task'}">${item.type==='meeting'?'Meeting':'Task'}</span>
+      </div>`).join('');
+
+  const upItems=[
+    ...DB.meetings.filter(m=>isUpcoming(m.date)).map(m=>({...m,type:'meeting'})),
+    ...DB.tasks.filter(t=>isUpcoming(t.date)&&!t.done).map(t=>({...t,type:'task'}))
+  ].sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+
+  const ul=document.getElementById('upcomingList');
+  if(ul) ul.innerHTML=upItems.length===0
+    ?`<div class="empty-state"><div class="empty-icon">🗓️</div><p>3 दिनों में कोई item नहीं</p></div>`
+    :upItems.map(item=>`
+      <div class="today-item ${item.type}">
+        <div class="item-time" style="font-size:10px;min-width:48px">${formatDate(item.date)}</div>
+        <div class="item-icon">${item.type==='meeting'?'📅':getCatIcon(item.category)}</div>
+        <div class="item-content"><div class="item-title">${item.title}</div><div class="item-desc">${item.time?formatTime(item.time):''} ${item.location||item.notes||''}</div></div>
+      </div>`).join('');
+}
+
+// ==================== MEETINGS ====================
+async function addMeeting() {
+  const title=document.getElementById('meetTitle').value.trim();
+  const date=document.getElementById('meetDate').value;
+  if(!title){showNotif('⚠️ Meeting का नाम डालें','warn');return;}
+  const meeting={
+    id:Date.now().toString(), title, date, time:document.getElementById('meetTime').value,
+    location:document.getElementById('meetLocation').value.trim(),
+    desc:document.getElementById('meetDesc').value.trim(),
+    reminder:document.getElementById('meetReminder').value,
+    repeat:document.getElementById('meetRepeat').value,
+    done:false, createdAt:new Date().toISOString()
+  };
+  try {
+    await saveMeetingToCloud(meeting);
+    ['meetTitle','meetDate','meetTime','meetLocation','meetDesc'].forEach(id=>document.getElementById(id).value='');
+    showNotif('☁️ Meeting cloud mein save ho gayi!','success');
+  } catch(e) { showNotif('❌ Save failed: '+e.message,'danger'); }
+}
+
+let meetFilter='all';
+function filterMeetings(f,btn) {
+  meetFilter=f;
+  document.querySelectorAll('#page-meetings .filter-chip').forEach(c=>c.classList.remove('active'));
+  btn.classList.add('active'); renderMeetings(f);
+}
+function renderMeetings(filter) {
+  let items=[...DB.meetings];
+  if(filter==='today') items=items.filter(m=>isToday(m.date));
+  else if(filter==='upcoming') items=items.filter(m=>isUpcoming(m.date,30));
+  else if(filter==='past') items=items.filter(m=>isPast(m.date));
+  items.sort((a,b)=>((a.date||'9999')+(a.time||'99:99')).localeCompare((b.date||'9999')+(b.time||'99:99')));
+  const container=document.getElementById('meetingsList');
+  if(!container) return;
+  if(items.length===0){container.innerHTML=`<div class="empty-state"><div class="empty-icon">📅</div><p>कोई meeting नहीं</p></div>`;return;}
+  container.innerHTML=items.map(m=>`
+    <div class="item-card ${m.done?'done-card':''}">
+      <div class="item-header">
+        <div>
+          <div class="item-name">${m.title}</div>
+          <div class="item-meta" style="margin-top:5px">
+            ${m.date?`<span>📅 ${formatDate(m.date)}</span>`:''}
+            ${m.time?`<span>🕐 ${formatTime(m.time)}</span>`:''}
+            ${m.location?`<span>📍 ${m.location}</span>`:''}
+          </div>
+          ${m.desc?`<div style="margin-top:6px;font-size:11px;color:var(--text2)">${m.desc}</div>`:''}
+        </div>
+        <div class="item-actions">
+          <button class="btn btn-done btn-sm" onclick="toggleMeeting('${m.id}')">${m.done?'↩️':'✅'}</button>
+          <button class="btn btn-danger btn-sm" onclick="delMeeting('${m.id}')">🗑️</button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+async function toggleMeeting(id) {
+  const m=DB.meetings.find(x=>x.id===id); if(!m) return;
+  m.done=!m.done; await saveMeetingToCloud(m);
+}
+async function delMeeting(id) {
+  if(!confirm('Delete करें?')) return;
+  await deleteMeetingFromCloud(id);
+  showNotif('🗑️ Meeting delete ho gayi','warn');
+}
+
+// ==================== TASKS ====================
+async function addTask() {
+  const title=document.getElementById('taskTitle').value.trim();
+  if(!title){showNotif('⚠️ Task का नाम डालें','warn');return;}
+  const task={
+    id:Date.now().toString(), title, date:document.getElementById('taskDate').value,
+    priority:document.getElementById('taskPriority').value,
+    category:document.getElementById('taskCategory').value,
+    notes:document.getElementById('taskNotes').value.trim(),
+    done:false, createdAt:new Date().toISOString()
+  };
+  try {
+    await saveTaskToCloud(task);
+    ['taskTitle','taskDate','taskNotes'].forEach(id=>document.getElementById(id).value='');
+    showNotif('☁️ Task cloud mein save ho gaya!','success');
+  } catch(e) { showNotif('❌ Save failed: '+e.message,'danger'); }
+}
+
+let taskFilter='all';
+function filterTasks(f,btn) {
+  taskFilter=f;
+  document.querySelectorAll('#page-tasks .filter-chip').forEach(c=>c.classList.remove('active'));
+  btn.classList.add('active'); renderTasks(f);
+}
+function renderTasks(filter) {
+  let items=[...DB.tasks];
+  if(filter==='pending') items=items.filter(t=>!t.done);
+  else if(filter==='done') items=items.filter(t=>t.done);
+  else if(filter==='high') items=items.filter(t=>t.priority==='high'&&!t.done);
+  else if(['office','census','electoral','personal','other'].includes(filter)) items=items.filter(t=>t.category===filter);
+  const container=document.getElementById('tasksList');
+  if(!container) return;
+  if(items.length===0){container.innerHTML=`<div class="empty-state"><div class="empty-icon">✅</div><p>कोई task नहीं</p></div>`;return;}
+  container.innerHTML=items.map(t=>`
+    <div class="item-card ${t.done?'done-card':''}">
+      <div class="item-header">
+        <div>
+          <div class="item-name" style="${t.done?'text-decoration:line-through':''}">${getCatIcon(t.category)} ${t.title}</div>
+          <div class="item-meta" style="margin-top:5px">
+            ${t.date?`<span class="${!t.done&&isPast(t.date)?'priority-high':''}">📅 ${formatDate(t.date)}${!t.done&&isPast(t.date)?' ⚠️':''}</span>`:''}
+            <span class="priority-${t.priority}">● ${t.priority.toUpperCase()}</span>
+            <span>${getCatIcon(t.category)} ${t.category}</span>
+          </div>
+          ${t.notes?`<div style="margin-top:5px;font-size:11px;color:var(--text2)">${t.notes}</div>`:''}
+        </div>
+        <div class="item-actions">
+          <button class="btn btn-done btn-sm" onclick="toggleTask('${t.id}')">${t.done?'↩️':'✅'}</button>
+          <button class="btn btn-danger btn-sm" onclick="delTask('${t.id}')">🗑️</button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+async function toggleTask(id) {
+  const t=DB.tasks.find(x=>x.id===id); if(!t) return;
+  t.done=!t.done; await saveTaskToCloud(t);
+}
+async function delTask(id) {
+  if(!confirm('Delete करें?')) return;
+  await deleteTaskFromCloud(id);
+  showNotif('🗑️ Task delete ho gaya','warn');
+}
+
+// ==================== AI CHAT ====================
+let chatHistory=[], attachedDoc=null, pendingAction=null;
+
+function saveApiKey() {
+  const key=document.getElementById('apiKeyInput').value.trim();
+  if(!key){showNotif('⚠️ API Key डालें','warn');return;}
+  DB.settings.apiKey=key; saveSettingsLocal(); updateApiStatus();
+  document.getElementById('apiSetup').style.display='none';
+  showNotif('✅ API Key save ho gayi!','success');
+  addAiMessage('API key mil gayi! Ab main puri tarah kaam kar sakta hoon. Kuch poochhen?');
+}
+
+function updateApiStatus() {
+  const dot=document.getElementById('statusDot'), txt=document.getElementById('statusText');
+  if(!dot) return;
+  if(DB.settings.apiKey){dot.classList.add('connected');txt.textContent='AI ✓';}
+  else{dot.classList.remove('connected');txt.textContent='AI';}
+  if(DB.settings.apiKey) document.getElementById('apiSetup').style.display='none';
+}
+
+function handleFileUpload(e) {
+  const file=e.target.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{ attachedDoc={name:file.name,content:reader.result}; document.getElementById('docPreviewBar').style.display='block'; document.getElementById('docName').textContent=file.name; showNotif(`📄 "${file.name}" attach ho gayi`,'success'); };
+  reader.readAsText(file); e.target.value='';
+}
+function clearDoc(){attachedDoc=null;document.getElementById('docPreviewBar').style.display='none';}
+
+function addUserMessage(text) {
+  const now=new Date(), time=`${now.getHours()}:${now.getMinutes().toString().padStart(2,'0')}`;
+  const div=document.createElement('div'); div.className='msg user';
+  div.innerHTML=`<div class="msg-avatar">👤</div><div><div class="msg-bubble">${text}</div><div class="msg-time" style="text-align:right">${time}</div></div>`;
+  document.getElementById('chatMessages').appendChild(div); div.scrollIntoView({behavior:'smooth'});
+}
+function addAiMessage(text) {
+  const now=new Date(), time=`${now.getHours()}:${now.getMinutes().toString().padStart(2,'0')}`;
+  const div=document.createElement('div'); div.className='msg ai';
+  div.innerHTML=`<div class="msg-avatar">🤖</div><div><div class="msg-bubble">${text.replace(/\n/g,'<br>')}</div><div class="msg-time">${time}</div></div>`;
+  document.getElementById('chatMessages').appendChild(div); div.scrollIntoView({behavior:'smooth'});
+}
+function showTyping(){const div=document.createElement('div');div.className='msg ai';div.id='typingMsg';div.innerHTML=`<div class="msg-avatar">🤖</div><div class="msg-bubble"><div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div></div>`;document.getElementById('chatMessages').appendChild(div);div.scrollIntoView({behavior:'smooth'});}
+function removeTyping(){const t=document.getElementById('typingMsg');if(t)t.remove();}
+
+function buildCtx() {
+  const u=window._currentUser?.();
+  const now=new Date(), todayStr=now.toISOString().split('T')[0];
+  const todayM=DB.meetings.filter(m=>isToday(m.date));
+  const pendingT=DB.tasks.filter(t=>!t.done);
+  const upcoming=DB.meetings.filter(m=>isUpcoming(m.date,7));
+  return `You are a smart personal assistant for ${u?.displayName||'Sahib'}.
+Designation: ${DB.settings.userDesig||'Tahsildar, Kutru, Jila Bijapur, Chhattisgarh'}
+Today: ${todayStr} (${now.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long'})})
+Time: ${now.getHours()}:${now.getMinutes().toString().padStart(2,'0')}
+
+YOUR JOB: Understand Hindi/Hinglish/English naturally.
+If user wants to ADD meeting/task → extract and respond ONLY with JSON:
+{"action":"add","type":"meeting"|"task","data":{...},"reply":"Hinglish confirmation"}
+If user wants to QUERY → {"action":"query","reply":"Hinglish answer"}
+If GENERAL → {"action":"info","reply":"Hinglish response"}
+
+MEETING data: {title, date(YYYY-MM-DD), time(HH:MM), location, desc, reminder:"30", repeat:"none"}
+TASK data: {title, date(YYYY-MM-DD), priority:"high"|"medium"|"low", category:"office"|"census"|"electoral"|"personal"|"other", notes}
+
+DATE: "kal"=${new Date(now.getTime()+86400000).toISOString().split('T')[0]}, "parso"=${new Date(now.getTime()+2*86400000).toISOString().split('T')[0]}, "aaj"=${todayStr}
+TIME: "subah 10"=10:00, "dopahar 2"=14:00, "shaam 5"=17:00, "raat 8"=20:00
+
+DATA:
+Today meetings: ${todayM.map(m=>`${m.title} at ${m.time||'?'}`).join('; ')||'None'}
+Upcoming: ${upcoming.map(m=>`${m.title} on ${m.date}`).join('; ')||'None'}
+Pending tasks: ${pendingT.length} (High: ${pendingT.filter(t=>t.priority==='high').map(t=>t.title).join(',')||'None'})
+${attachedDoc?`\nDocument (${attachedDoc.name}):\n${attachedDoc.content.substring(0,5000)}`:''}
+
+RESPOND ONLY WITH VALID JSON. Always include "reply" in Hinglish.`;
+}
+
+function showConfirmCard(action) {
+  pendingAction=action; const d=action.data; const isM=action.type==='meeting';
+  const div=document.createElement('div'); div.className='msg ai'; div.id='confirmCard';
+  div.innerHTML=`<div class="msg-avatar">🤖</div><div style="flex:1"><div class="msg-bubble" style="max-width:100%">
+    <div style="font-weight:700;margin-bottom:8px;color:var(--accent)">${isM?'📅 Meeting':'✅ Task'} Add करें?</div>
+    <div style="background:var(--surface2);border-radius:9px;padding:10px;font-size:12px;line-height:2">
+      <div>📌 <b>${d.title}</b></div>
+      ${d.date?`<div>📅 ${formatDate(d.date)}</div>`:''}
+      ${d.time?`<div>🕐 ${formatTime(d.time)}</div>`:''}
+      ${d.location?`<div>📍 ${d.location}</div>`:''}
+      ${d.priority?`<div>⚡ ${d.priority.toUpperCase()}</div>`:''}
+      ${d.category?`<div>🏷️ ${d.category}</div>`:''}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-primary" style="flex:1" onclick="confirmAdd()">☁️ हाँ, Save करें</button>
+      <button class="btn btn-danger" style="flex:1" onclick="cancelAdd()">❌ नहीं</button>
+    </div>
+  </div></div>`;
+  document.getElementById('chatMessages').appendChild(div); div.scrollIntoView({behavior:'smooth'});
+}
+
+async function confirmAdd() {
+  if(!pendingAction) return;
+  const d=pendingAction.data, isM=pendingAction.type==='meeting';
+  document.getElementById('confirmCard')?.remove();
+  try {
+    if(isM) {
+      await saveMeetingToCloud({id:Date.now().toString(),title:d.title,date:d.date||'',time:d.time||'',location:d.location||'',desc:d.desc||'',reminder:d.reminder||'30',repeat:d.repeat||'none',done:false,createdAt:new Date().toISOString()});
+    } else {
+      await saveTaskToCloud({id:Date.now().toString(),title:d.title,date:d.date||'',priority:d.priority||'medium',category:d.category||'office',notes:d.notes||'',done:false,createdAt:new Date().toISOString()});
+    }
+    addAiMessage(`☁️ ${isM?'Meeting':'Task'} cloud mein save ho gaya! Sab devices pe dikhe ga.`);
+    showNotif(`☁️ ${isM?'Meeting':'Task'} synced!`,'success');
+  } catch(e) { addAiMessage('❌ Save failed: '+e.message); }
+  pendingAction=null;
+}
+
+function cancelAdd() {
+  document.getElementById('confirmCard')?.remove();
+  addAiMessage('Theek hai, save nahi kiya. Kuch badlaav karna hai?');
+  pendingAction=null;
+}
+
+async function sendChat() {
+  const input=document.getElementById('chatInput');
+  const userText=input.value.trim(); if(!userText) return;
+  if(!DB.settings.apiKey){showNotif('⚠️ Gemini API Key save karein','warn');return;}
+  document.getElementById('confirmCard')?.remove(); pendingAction=null;
+  input.value=''; document.getElementById('sendBtn').disabled=true;
+  addUserMessage(userText);
+  chatHistory.push({role:'user',parts:[{text:userText}]});
+  showTyping();
+  try {
+    const resp=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${DB.settings.apiKey}`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({system_instruction:{parts:[{text:buildCtx()}]},contents:chatHistory,generationConfig:{temperature:0.3,maxOutputTokens:1024}})
+    });
+    const data=await resp.json();
+    if(data.error){removeTyping();addAiMessage(`❌ Error: ${data.error.message}`);}
+    else {
+      let raw=data.candidates?.[0]?.content?.parts?.[0]?.text||'{}';
+      removeTyping();
+      try {
+        raw=raw.replace(/```json|```/g,'').trim();
+        const parsed=JSON.parse(raw);
+        if(parsed.action==='add'&&parsed.data){addAiMessage(parsed.reply||'Add karna hai?');chatHistory.push({role:'model',parts:[{text:parsed.reply||''}]});showConfirmCard(parsed);}
+        else{addAiMessage(parsed.reply||raw);chatHistory.push({role:'model',parts:[{text:parsed.reply||raw}]});}
+      } catch(e){addAiMessage(raw);chatHistory.push({role:'model',parts:[{text:raw}]});}
+      if(chatHistory.length>20) chatHistory=chatHistory.slice(-16);
+    }
+  } catch(err){removeTyping();addAiMessage(`❌ Network error: ${err.message}`);}
+  document.getElementById('sendBtn').disabled=false; input.focus();
+}
+
+// ==================== SETTINGS ====================
+function loadSettingsUI() {
+  const u=window._currentUser?.();
+  if(u){
+    const el=document.getElementById('settingsAvatar'); if(el){el.src=u.photoURL||'';el.style.display='block';}
+    const n=document.getElementById('userName2'); if(n) n.textContent=u.displayName||'User';
+    const e=document.getElementById('userEmail'); if(e) e.textContent=u.email||'';
+  }
+  document.getElementById('userDesig').value=DB.settings.userDesig||'';
+  if(DB.settings.apiKey) document.getElementById('apiKeySettings').value=DB.settings.apiKey;
+  document.getElementById('notifToggle').classList.toggle('on',DB.settings.notifications);
+  document.getElementById('briefingToggle').classList.toggle('on',DB.settings.briefing);
+}
+function saveProfile(){DB.settings.userDesig=document.getElementById('userDesig').value.trim();saveSettingsLocal();showNotif('✅ Profile save ho gayi!','success');}
+function saveApiKeyFromSettings(){const k=document.getElementById('apiKeySettings').value.trim();if(!k)return;DB.settings.apiKey=k;saveSettingsLocal();updateApiStatus();showNotif('✅ API Key updated!','success');}
+
+async function toggleNotifications(){
+  if(!DB.settings.notifications){
+    const p=await Notification.requestPermission();
+    if(p==='granted'){DB.settings.notifications=true;document.getElementById('notifToggle').classList.add('on');showNotif('✅ Notifications ON!','success');}
+    else{showNotif('⚠️ Permission denied','warn');}
+  } else {DB.settings.notifications=false;document.getElementById('notifToggle').classList.remove('on');}
+  saveSettingsLocal();
+}
+function toggleBriefing(){DB.settings.briefing=!DB.settings.briefing;document.getElementById('briefingToggle').classList.toggle('on',DB.settings.briefing);saveSettingsLocal();showNotif(DB.settings.briefing?'✅ Daily briefing ON (8 AM)':'Briefing OFF','success');}
+
+function exportData(){
+  const blob=new Blob([JSON.stringify({meetings:DB.meetings,tasks:DB.tasks},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`nij-sahayak-${new Date().toISOString().split('T')[0]}.json`;a.click();
+}
+
+// ==================== NOTIFICATIONS ====================
+function showNotif(msg,type='info'){
+  const bar=document.getElementById('notifBar');
+  const div=document.createElement('div'); div.className='notif';
+  div.style.borderColor=type==='warn'?'var(--warn)':type==='danger'?'var(--danger)':'var(--accent)';
+  div.innerHTML=`<span>${msg}</span><span class="notif-close" onclick="this.parentNode.remove()">✕</span>`;
+  bar.appendChild(div); setTimeout(()=>div.remove(),4000);
+}
+
+// ==================== INIT ====================
+setInterval(updateClock,1000);
+const today=new Date().toISOString().split('T')[0];
+const mEl=document.getElementById('meetDate'), tEl=document.getElementById('taskDate');
+if(mEl) mEl.value=today; if(tEl) tEl.value=today;
+</script>
+</body>
+</html>
